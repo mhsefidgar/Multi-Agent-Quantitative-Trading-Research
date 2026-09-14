@@ -36,7 +36,7 @@ class AlpacaBroker:
         self._client = httpx.Client(timeout=timeout, headers=self._headers)
 
     @classmethod
-    def from_environment(cls) -> "AlpacaBroker":
+    def from_environment(cls) -> AlpacaBroker:
         return cls(
             os.environ["ALPACA_API_KEY"],
             os.environ["ALPACA_SECRET_KEY"],
