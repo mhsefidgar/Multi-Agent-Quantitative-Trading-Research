@@ -38,9 +38,12 @@ jobs:
       - run: terraform -chdir=terraform init -backend=false
       - run: terraform -chdir=terraform validate
 
+  # Deployment is intentionally disabled until an AWS environment is explicitly provisioned.
+  # When deployment is introduced, configure GitHub OIDC, the production environment,
+  # AWS_DEPLOY_ROLE_ARN, ECR/ECS variables, and the role's least-privilege IAM policy first.
   deploy:
     needs: terraform
-    if: github.ref == 'refs/heads/main'
+    if: ${{ false }}
     environment: production
     runs-on: ubuntu-latest
     steps:
