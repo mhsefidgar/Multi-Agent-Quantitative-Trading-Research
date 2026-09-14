@@ -1,7 +1,7 @@
 """Deterministic LangGraph orchestration for quantitative research."""
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
@@ -69,8 +69,8 @@ def run_research(state: ResearchState) -> ResearchState:
     """Run one graph invocation inside a single root span for unified trace propagation."""
     with research_span(state):
         try:
-            return research_graph.invoke(state)
+            return cast(ResearchState, research_graph.invoke(state))
         except Exception as exc:  # noqa: BLE001 - graph failures must be converted to fail-closed state
             failed = dict(state)
             failed["error"] = str(exc)
-            return failure(failed)
+            return cast(ResearchState, failure(failed))
