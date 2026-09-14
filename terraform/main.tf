@@ -113,8 +113,8 @@ resource "aws_db_instance" "postgres" {
 }
 
 resource "aws_msk_cluster" "events" {
-  cluster_name           = "quant-engine-${var.environment}"
-  kafka_version           = "3.7.x"
+  cluster_name          = "quant-engine-${var.environment}"
+  kafka_version          = "3.7.x"
   number_of_broker_nodes = 2
 
   broker_node_group_info {
