@@ -31,16 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
-      - run: terraform -chdir=terraform fmt -check
+      - run: terraform -chdir=terraform fmt -check -diff
       - run: terraform -chdir=terraform init -backend=false
       - run: terraform -chdir=terraform validate
-      - name: Terraform plan
-        env:
-          TF_VAR_aws_region: ${{ vars.AWS_REGION }}
-          TF_VAR_vpc_id: ${{ vars.VPC_ID }}
-          TF_VAR_private_subnet_ids: ${{ vars.PRIVATE_SUBNET_IDS }}
-          TF_VAR_broker_secret_arn: ${{ vars.BROKER_SECRET_ARN }}
-        run: terraform -chdir=terraform plan -out=tfplan
 
   deploy:
     needs: terraform
