@@ -25,7 +25,7 @@ packages = ["src"]
 [tool.ruff]
 line-length = 120
 
-a[tool.mypy]
+[tool.mypy]
 python_version = "3.11"
 check_untyped_defs = true
 warn_unused_ignores = true
