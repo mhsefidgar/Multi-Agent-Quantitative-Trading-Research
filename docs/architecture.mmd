@@ -1,0 +1,229 @@
+%% Multi-Agent Quantitative Trading Research — system architecture
+%% Mermaid compatibility target: 11.16.1
+flowchart LR
+  %% =========================
+  %% External inputs
+  %% =========================
+  subgraph INPUTS["MARKET & RESEARCH INPUTS"]
+    MD["Market Data\nOHLCV bars"]
+    CFG["Research State\nticker • portfolio • order proposal"]
+    COSTS["Execution Assumptions\nspread • slippage • commission"]
+  end
+
+  %% =========================
+  %% Research graph
+  %% =========================
+  subgraph GRAPH["LANGGRAPH RESEARCH WORKFLOW"]
+    START(("START"))
+    ALPHA["Alpha Miner\n• validates close / volume\n• momentum × volume-z\n• bounded vectorized factor"]
+    BT["Cost-Aware Backtester\n• shifted signal\n• spread + slippage + commission\n• Sharpe • Sortino • drawdown\n• decay • turnover • return"]
+
+    subgraph DEBATE["ADVISORY MULTI-AGENT DEBATE"]
+      BULL["Bull Agent\nPersistence • liquidity\nEconomic rationale"]
+      BEAR["Bear Agent\nDrawdown • costs\nDecay • regime risk"]
+    end
+
+    RISK{"Deterministic Risk Manager\nFAIL-CLOSED • NO LLM OVERRIDE"}
+    DECISION{"Risk Decision\nAPPROVE / BLOCK"}
+    EXEC["Execution Gateway\nTyped OrderRequest"]
+    FAIL["Failure Handler\nrecord error → no order"]
+    END(("END"))
+  end
+
+  %% =========================
+  %% Broker boundary
+  %% =========================
+  subgraph EXECUTION["EXECUTION BOUNDARY"]
+    BROKER["Alpaca Broker Adapter\nMarket / Limit • dry-run • lookup"]
+    ALPACA["Alpaca REST API"]
+    VENUE["Broker / Market Venue"]
+  end
+
+  %% =========================
+  %% Durable state
+  %% =========================
+  subgraph DATA["DURABLE STATE — POSTGRESQL + PGVECTOR"]
+    DB["PostgreSQL"]
+    RUNS["research_runs\nstatus • risk decision • trace"]
+    FACTORS["factor_observations\nvalues • embeddings"]
+    MSGS["agent_messages\nbull / bear research"]
+    ORDERS["orders\nclient_order_id • fills • slippage"]
+    AUDIT["audit_events\nimmutable event payloads"]
+  end
+
+  %% =========================
+  %% Observability
+  %% =========================
+  subgraph OBS["OBSERVABILITY"]
+    OTEL["OpenTelemetry\nroot + child spans"]
+    PROM["Prometheus\nlatency • tokens • Sharpe\nslippage"]
+    LOGS["Structured JSON Logs\ntimestamp • trace_id • node • ticker"]
+    TRACE["W3C trace_id\ngraph state → logs → HTTP → order metadata"]
+  end
+
+  %% =========================
+  %% Cloud / delivery
+  %% =========================
+  subgraph CLOUD["AWS DEPLOYMENT FOUNDATION"]
+    GH["GitHub Actions\nRuff • mypy • pytest\nfactor baseline gate"]
+    TF["Terraform\nVPC • IAM • ECS • RDS • MSK"]
+    ECR["ECR\nimmutable image: commit SHA"]
+    ECS["ECS / Fargate\nstateless API / worker"]
+    MSK["Amazon MSK / Kafka\ndurable market & order events"]
+    SM["Secrets Manager\nbroker credentials"]
+    CW["CloudWatch\nlogs / operational signals"]
+  end
+
+  %% =========================
+  %% Primary research path
+  %% =========================
+  MD --> START
+  CFG --> START
+  COSTS --> BT
+  START --> ALPHA --> BT --> BULL --> BEAR --> RISK
+  RISK --> DECISION
+  DECISION -->|"BLOCK"| END
+  DECISION -->|"APPROVE"| EXEC --> BROKER --> ALPACA --> VENUE
+  ALPHA -."exception".-> FAIL
+  BT -."exception".-> FAIL
+  BULL -."exception".-> FAIL
+  BEAR -."exception".-> FAIL
+  RISK -."exception".-> FAIL
+  EXEC -."exception".-> FAIL
+  FAIL --> END
+
+  %% =========================
+  %% Risk invariants
+  %% =========================
+  subgraph GUARDRAILS["HARD RISK INVARIANTS"]
+    G1["Position notional ≤ portfolio × max position fraction"]
+    G2["1-day estimated VaR ≤ configured fraction"]
+    G3["Max drawdown ≤ hard breaker"]
+    G4["Sharpe ≥ minimum threshold"]
+    G5["Order qty / price finite and positive"]
+    G6["Ticker present / allow-list policy"]
+    G7["Order notional ≤ absolute cap"]
+  end
+
+  RISK --- G1
+  RISK --- G2
+  RISK --- G3
+  RISK --- G4
+  RISK --- G5
+  RISK --- G6
+  RISK --- G7
+
+  %% =========================
+  %% Data persistence
+  %% =========================
+  ALPHA -."factor".-> FACTORS
+  BT -."metrics".-> RUNS
+  BULL -."advisory output".-> MSGS
+  BEAR -."advisory output".-> MSGS
+  RISK -."decision + hash".-> RUNS
+  EXEC -."order payload".-> ORDERS
+  FAIL -."failure event".-> AUDIT
+  RISK -."audit decision".-> AUDIT
+  DB --- RUNS
+  DB --- FACTORS
+  DB --- MSGS
+  DB --- ORDERS
+  DB --- AUDIT
+
+  %% =========================
+  %% Event / cloud relationships
+  %% =========================
+  ECS --> DB
+  ECS --> MSK
+  MSK -."future durable ingestion / consumers".-> MD
+  SM -."runtime secrets".-> ECS
+  GH --> ECR --> ECS
+  GH --> TF
+  TF --> ECS
+  TF --> DB
+  TF --> MSK
+  ECS --> CW
+
+  %% =========================
+  %% Observability fan-out
+  %% =========================
+  START -."root span".-> OTEL
+  ALPHA -."child span".-> OTEL
+  BT -."child span".-> OTEL
+  BULL -."child span".-> OTEL
+  BEAR -."child span".-> OTEL
+  RISK -."child span".-> OTEL
+  EXEC -."child span".-> OTEL
+  OTEL --> TRACE
+  TRACE -."correlates".-> LOGS
+  OTEL --> PROM
+  ECS --> LOGS
+  ECS --> PROM
+
+  %% =========================
+  %% Release gates / lifecycle
+  %% =========================
+  subgraph RELEASE["RELEASE & TRADING LIFECYCLE"]
+    LOCAL["Local Research"] --> PAPER["Paper Trading"] --> STAGE["Durable Staging"] --> RECOVERY["Failure / Recovery Tests"] --> SOAK["Paper Soak"] --> CANARY["Controlled Canary"] --> SCALE["Gradual Scale"]
+  end
+
+  GH -."validated release".-> LOCAL
+  ECS -."deployment target".-> STAGE
+  BROKER -."paper endpoint during development".-> PAPER
+
+  %% =========================
+  %% Critical design constraints
+  %% =========================
+  subgraph PRINCIPLES["NON-NEGOTIABLE DESIGN PRINCIPLES"]
+    P1["AI / Bull / Bear output is ADVISORY ONLY"]
+    P2["Only deterministic risk can authorize execution"]
+    P3["Risk rejection cannot be overridden by an agent"]
+    P4["Any exception routes to FAILURE and prevents submission"]
+    P5["Dry-run creates an auditable payload without sending"]
+    P6["Secrets stay outside source, image, Terraform, and Git"]
+  end
+
+  P1 -.-> BULL
+  P1 -.-> BEAR
+  P2 -.-> RISK
+  P3 -.-> DECISION
+  P4 -.-> FAIL
+  P5 -.-> BROKER
+  P6 -.-> SM
+
+  %% =========================
+  %% Visual hierarchy
+  %% =========================
+  classDef input fill:#eef6ff,stroke:#4a78a8,stroke-width:1.5px,color:#17324d;
+  classDef process fill:#f7f7f7,stroke:#555,stroke-width:1.5px,color:#222;
+  classDef agent fill:#f5efff,stroke:#7754a6,stroke-width:1.5px,color:#2e1d46;
+  classDef risk fill:#fff3e6,stroke:#c46b16,stroke-width:2.5px,color:#4a2705;
+  classDef decision fill:#fff8dc,stroke:#a88600,stroke-width:2px,color:#443600;
+  classDef execution fill:#eef8f0,stroke:#3d8050,stroke-width:1.8px,color:#183d22;
+  classDef data fill:#eef8f8,stroke:#3c7f83,stroke-width:1.5px,color:#173b3d;
+  classDef obs fill:#f3f3fb,stroke:#66689a,stroke-width:1.5px,color:#28294b;
+  classDef cloud fill:#f4f4f4,stroke:#777,stroke-width:1.5px,color:#252525;
+  classDef guard fill:#fff5f5,stroke:#a64b4b,stroke-width:1.2px,color:#4a2020;
+  classDef principle fill:#fafafa,stroke:#777,stroke-dasharray:4 3,color:#333;
+
+  class MD,CFG,COSTS input;
+  class START,ALPHA,BT,EXEC,FAIL,END process;
+  class BULL,BEAR agent;
+  class RISK risk;
+  class DECISION decision;
+  class BROKER,ALPACA,VENUE execution;
+  class DB,RUNS,FACTORS,MSGS,ORDERS,AUDIT data;
+  class OTEL,PROM,LOGS,TRACE obs;
+  class GH,TF,ECR,ECS,MSK,SM,CW cloud;
+  class G1,G2,G3,G4,G5,G6,G7 guard;
+  class P1,P2,P3,P4,P5,P6 principle;
+
+  style GRAPH fill:#ffffff,stroke:#333,stroke-width:2px
+  style DEBATE fill:#fcfaff,stroke:#7754a6,stroke-width:1px
+  style EXECUTION fill:#fbfffb,stroke:#3d8050,stroke-width:1px
+  style DATA fill:#fbffff,stroke:#3c7f83,stroke-width:1px
+  style OBS fill:#fbfbff,stroke:#66689a,stroke-width:1px
+  style CLOUD fill:#fcfcfc,stroke:#777,stroke-width:1px
+  style GUARDRAILS fill:#fffafa,stroke:#a64b4b,stroke-width:1px
+  style RELEASE fill:#fafafa,stroke:#888,stroke-width:1px
+  style PRINCIPLES fill:#fafafa,stroke:#777,stroke-width:1px
