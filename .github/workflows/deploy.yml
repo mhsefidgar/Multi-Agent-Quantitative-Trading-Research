@@ -31,9 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
+      - run: terraform -chdir=terraform fmt -check
       - run: terraform -chdir=terraform init -backend=false
       - run: terraform -chdir=terraform validate
-      - run: terraform -chdir=terraform plan
+      - name: Terraform plan
+        env:
+          TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+          TF_VAR_vpc_id: ${{ vars.VPC_ID }}
+          TF_VAR_private_subnet_ids: ${{ vars.PRIVATE_SUBNET_IDS }}
+          TF_VAR_broker_secret_arn: ${{ vars.BROKER_SECRET_ARN }}
+        run: terraform -chdir=terraform plan -out=tfplan
 
   deploy:
     needs: terraform
@@ -46,13 +53,25 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-      - name: Build and push image
+      - name: Build and push immutable image
         env:
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
           AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          aws ecr get-login-password | docker login --username AWS --password-stdin "$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
-          docker build -t "$ECR_REPOSITORY:${GITHUB_SHA}" .
+          REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
+          docker build --pull -t "$ECR_REPOSITORY:${GITHUB_SHA}" .
           docker push "$ECR_REPOSITORY:${GITHUB_SHA}"
-      - name: Rolling ECS deployment
-        run: aws ecs update-service --cluster "${{ vars.ECS_CLUSTER }}" --service "${{ vars.ECS_SERVICE }}" --force-new-deployment
+      - name: Register task definition with release image
+        env:
+          CLUSTER: ${{ vars.ECS_CLUSTER }}
+          SERVICE: ${{ vars.ECS_SERVICE }}
+          IMAGE: ${{ vars.ECR_REPOSITORY }}:${{ github.sha }}
+        run: |
+          aws ecs describe-task-definition --task-definition "$SERVICE" --query taskDefinition > task-definition.json
+          jq --arg image "$IMAGE" '.containerDefinitions[0].image=$image | del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)' task-definition.json > task-definition.release.json
+          aws ecs register-task-definition --cli-input-json file://task-definition.release.json > registered.json
+          REVISION=$(jq -r '.taskDefinition.taskDefinitionArn' registered.json)
+          aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$REVISION"
+      - name: Wait for stable deployment
+        run: aws ecs wait services-stable --cluster "${{ vars.ECS_CLUSTER }}" --services "${{ vars.ECS_SERVICE }}"
