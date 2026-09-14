@@ -10,7 +10,7 @@ permissions:
   id-token: write
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
 
 jobs:
   validate:
@@ -69,4 +69,4 @@ jobs:
           REVISION=$(jq -r '.taskDefinition.taskDefinitionArn' registered.json)
           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$REVISION"
       - name: Wait for stable deployment
-        run: aws ecs wait services-stable --cluster "${{ env.AWS_REGION }}" --services "${{ vars.ECS_SERVICE }}"
+        run: aws ecs wait services-stable --cluster "$CLUSTER" --services "$SERVICE"
