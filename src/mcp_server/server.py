@@ -84,5 +84,10 @@ def evaluate_risk(
     )["risk"]
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the MCP server over stdio for low-overhead local integration."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
