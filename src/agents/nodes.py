@@ -4,13 +4,16 @@ from __future__ import annotations
 import hashlib
 import math
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 
 from src.execution.alpaca_broker import AlpacaBroker, OrderRequest
 from src.telemetry.logging_tracing import node_span
+
+if TYPE_CHECKING:
+    from .graph import ResearchState
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,7 @@ def _require_finite_series(series: pd.Series, name: str) -> None:
         raise ValueError(f"{name} contains non-finite values")
 
 
-def alpha_miner(state: dict[str, Any]) -> dict[str, Any]:
+def alpha_miner(state: ResearchState) -> dict[str, Any]:
     bars = state.get("bars")
     if not isinstance(bars, pd.DataFrame):
         raise TypeError("bars must be a pandas DataFrame")
@@ -57,7 +60,7 @@ def alpha_miner(state: dict[str, Any]) -> dict[str, Any]:
         return {"factor": factor, "factor_name": "momentum_volume_z"}
 
 
-def backtester(state: dict[str, Any]) -> dict[str, Any]:
+def backtester(state: ResearchState) -> dict[str, Any]:
     with node_span("backtester", state):
         bars = state["bars"]
         signal = state["factor"].shift(1).clip(-1, 1)
@@ -93,17 +96,17 @@ def backtester(state: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def bull_debate(state: dict[str, Any]) -> dict[str, str]:
+def bull_debate(state: ResearchState) -> dict[str, str]:
     metrics = state["backtest"]
     return {"bull": f"Edge case: Sharpe={metrics['sharpe']:.3f}; seek persistence, liquidity and economic rationale."}
 
 
-def bear_debate(state: dict[str, Any]) -> dict[str, str]:
+def bear_debate(state: ResearchState) -> dict[str, str]:
     metrics = state["backtest"]
     return {"bear": f"Failure case: drawdown={metrics['max_drawdown']:.2%}; challenge costs, decay={metrics['alpha_decay']:.3f}, and regime dependence."}
 
 
-def risk_manager(state: dict[str, Any], limits: RiskLimits = DEFAULT_LIMITS) -> dict[str, Any]:
+def risk_manager(state: ResearchState, limits: RiskLimits = DEFAULT_LIMITS) -> dict[str, Any]:
     """Pure, fail-closed policy. No LLM output is consulted for approval."""
     with node_span("risk_manager", state):
         if any(
@@ -142,7 +145,7 @@ def risk_manager(state: dict[str, Any], limits: RiskLimits = DEFAULT_LIMITS) -> 
         return {"risk": {"approved": approved, "reason": reason, "checks": checks, "decision_hash": decision_hash}}
 
 
-def execute_order(state: dict[str, Any]) -> dict[str, Any]:
+def execute_order(state: ResearchState) -> dict[str, Any]:
     if not state.get("risk", {}).get("approved", False):
         raise PermissionError("execution reached without risk approval")
 
@@ -160,5 +163,5 @@ def execute_order(state: dict[str, Any]) -> dict[str, Any]:
         broker.close()
 
 
-def failure(state: dict[str, Any]) -> dict[str, Any]:
+def failure(state: ResearchState) -> dict[str, Any]:
     return {"error": str(state.get("error", "unknown failure"))}
