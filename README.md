@@ -1,44 +1,116 @@
 # Multi-Agent Quantitative Trading Research
 
-Production-oriented reference architecture for a deterministic, auditable quantitative research and trading workflow built around LangGraph, Python, PostgreSQL/pgvector, Kafka/MSK, AWS ECS/Fargate, and Alpaca.
+A production-oriented foundation for building **auditable quantitative research and trading workflows** with LangGraph, Python, deterministic risk controls, Alpaca, PostgreSQL/pgvector, Kafka/MSK, and AWS.
 
-> **Current status: research/production-engineering scaffold — not production-ready for live trading.**
+> **Status: research / production-engineering foundation — not approved for live trading.**
 >
-> The repository now contains the core orchestration, deterministic risk controls, broker adapter, tests, observability primitives, database schema, Terraform baseline, and CI/CD workflow. Before enabling live trading, the remaining production gates listed in [Production Readiness](#production-readiness) must be completed and validated in a real AWS environment.
+> The repository deliberately separates research and agent reasoning from the rules that can authorize execution. The current code is useful for development, testing, paper trading, and architecture work, but several live-trading requirements still need to be implemented and validated.
 
-## What this project does
+## Why this project exists
 
-The engine models a research-to-execution pipeline:
+Quantitative trading systems have two very different problems:
+
+1. **Research:** generate signals, test ideas, compare assumptions, and explain why a strategy might work or fail.
+2. **Execution:** protect the account, validate orders, survive failures, reconcile broker state, and leave an audit trail.
+
+This project keeps those responsibilities separate. Agent/debate output is treated as research context. **It is never the authority that approves an order.** The risk manager is deterministic and fail-closed, and the execution node requires an explicit risk approval.
+
+## What is included
+
+### Research pipeline
+
+- LangGraph orchestration
+- Deterministic `momentum_volume_z` alpha baseline
+- Backtest with one-period signal lag
+- Spread, slippage, and commission assumptions
+- Sharpe, Sortino, drawdown, alpha-decay, turnover/trade diagnostics
+- Bull and bear research commentary nodes
+
+### Risk and execution
+
+- Position-size limit
+- Maximum order notional
+- Estimated VaR limit
+- Drawdown breaker
+- Minimum Sharpe requirement
+- Input validation for quantities, prices, portfolio value, and ticker
+- Deterministic risk decision hash
+- Execution guard that blocks unapproved orders
+- Typed Alpaca REST adapter
+- Market and limit order payload validation
+- Dry-run support
+- `client_order_id` support
+- Broker order lookup helper
+
+### Engineering foundation
+
+- Structured JSON logging with structlog
+- Prometheus metrics
+- OpenTelemetry spans
+- PostgreSQL/pgvector schema
+- HNSW vector index for factor observations
+- Terraform baseline for ECS/Fargate, ECR, RDS PostgreSQL, MSK, IAM, security groups, and CloudWatch
+- GitHub Actions quality/deployment workflow
+- Non-root container image
+- Long-running worker entry point with graceful SIGTERM/SIGINT handling
+- Deterministic automated tests
+
+## Architecture
 
 ```text
-Market Data
-    |
-    v
-Alpha Miner -----> Backtester -----> Bull Debate -----> Bear Debate
-                                                           |
-                                                           v
-                                                   Rule-Based Risk
-                                                    /          \
-                                               blocked        approved
-                                                  |              |
-                                                 END          Execution
-                                                                  |
-                                                                  v
-                                                               Alpaca
+                         +------------------+
+                         |   Market Data    |
+                         +--------+---------+
+                                  |
+                                  v
+                         +------------------+
+                         |    Alpha Miner   |
+                         +--------+---------+
+                                  |
+                                  v
+                         +------------------+
+                         |    Backtester    |
+                         +--------+---------+
+                                  |
+                                  v
+                         +------------------+
+                         |   Bull / Bear    |
+                         |    Research     |
+                         +--------+---------+
+                                  |
+                                  v
+                         +------------------+
+                         | Rule-Based Risk  |
+                         |  (fail closed)   |
+                         +----+--------+----+
+                              |        |
+                           blocked   approved
+                              |        |
+                              v        v
+                             END   +----------+
+                                   | Execution|
+                                   +----+-----+
+                                        |
+                                        v
+                                   +---------+
+                                   | Alpaca  |
+                                   +---------+
 ```
 
-The important design rule is that **LLM/agent commentary cannot approve an order**. Risk approval is computed by deterministic policy checks over validated state and backtest metrics. An execution node also refuses to run without an explicit approved risk decision.
+Supporting infrastructure is designed around:
 
-## Core principles
-
-- **Fail closed:** invalid market data, invalid quantities/prices, or failed research steps must not silently produce an executable order.
-- **Deterministic risk:** position, notional, VaR, drawdown, Sharpe, and input-validity checks are evaluated by ordinary Python logic.
-- **Auditable decisions:** risk decisions receive a deterministic decision hash; the SQL schema provides tables for research runs, agent messages, orders, and audit events.
-- **Separation of concerns:** research/debate output is separated from the policy that controls execution.
-- **Paper trading by default:** the Alpaca adapter supports dry-run operation and defaults to the Alpaca paper endpoint when configured from the environment.
-- **Idempotent order intent:** orders support a `client_order_id`, allowing an application-level reconciliation layer to prevent duplicate submissions.
-- **Observable execution:** structured logging, Prometheus metrics, and OpenTelemetry spans are included as observability primitives.
-- **Immutable releases:** the CI/CD workflow builds and pushes container images using the Git commit SHA as the release tag.
+```text
+GitHub Actions -> ECR -> ECS/Fargate
+                         |
+               +---------+---------+
+               |                   |
+             RDS                 MSK
+          PostgreSQL            Kafka
+               |
+           pgvector
+               |
+        CloudWatch / OTEL
+```
 
 ## Repository layout
 
@@ -46,26 +118,27 @@ The important design rule is that **LLM/agent commentary cannot approve an order
 .
 ├── src/
 │   ├── agents/
-│   │   ├── graph.py                 # LangGraph topology and invocation wrapper
+│   │   ├── graph.py                 # LangGraph topology and invocation
 │   │   └── nodes.py                 # alpha, backtest, debate, risk, execution
 │   ├── execution/
 │   │   └── alpaca_broker.py         # typed Alpaca REST adapter
+│   ├── storage/
+│   │   └── schema.sql                # PostgreSQL + pgvector schema
 │   ├── telemetry/
-│   │   └── logging_tracing.py       # structlog, Prometheus, OpenTelemetry
-│   └── storage/
-│       └── schema.sql                # PostgreSQL + pgvector schema
+│   │   └── logging_tracing.py       # logging, metrics, tracing
+│   └── worker.py                    # long-running container entry point
 ├── tests/
-│   ├── test_alpaca_broker.py        # broker contract tests
-│   ├── test_factor_baseline.py      # deterministic factor baseline
-│   ├── test_graph.py                # graph fail-closed/risk routing tests
-│   └── test_risk_manager.py         # deterministic risk tests
+│   ├── test_alpaca_broker.py
+│   ├── test_factor_baseline.py
+│   ├── test_graph.py
+│   └── test_risk_manager.py
 ├── terraform/
-│   └── main.tf                      # AWS baseline: ECS, ECR, RDS, MSK, IAM, SGs
+│   └── main.tf
 ├── .github/workflows/
-│   └── deploy.yml                   # lint/type/test/Terraform/build/deploy pipeline
-├── architecture_schema.md           # architecture and risk invariants
-├── Dockerfile                        # non-root Python container
-└── pyproject.toml                    # Python package and tooling configuration
+│   └── deploy.yml
+├── architecture_schema.md
+├── Dockerfile
+└── pyproject.toml
 ```
 
 ## Technology stack
@@ -73,78 +146,61 @@ The important design rule is that **LLM/agent commentary cannot approve an order
 | Area | Technology |
 |---|---|
 | Language | Python 3.11+ |
-| Agent orchestration | LangGraph |
-| Research | NumPy, pandas |
-| Broker API | Alpaca REST via httpx |
+| Orchestration | LangGraph |
+| Research | pandas, NumPy |
+| Broker | Alpaca REST + httpx |
 | Database | PostgreSQL 16 |
 | Vector search | pgvector / HNSW |
-| Event backbone | Amazon MSK / Kafka baseline |
+| Messaging baseline | Amazon MSK / Kafka |
 | Compute | AWS ECS Fargate |
-| Container registry | Amazon ECR |
+| Registry | Amazon ECR |
 | Secrets | AWS Secrets Manager |
-| Logs | CloudWatch Logs |
+| Logging | CloudWatch + structlog |
 | Metrics | Prometheus client |
 | Tracing | OpenTelemetry |
-| IaC | Terraform |
+| Infrastructure | Terraform |
 | CI/CD | GitHub Actions |
-
-## Important production-readiness statement
-
-This repository should **not** be connected to a live brokerage account solely because the infrastructure and risk code exist.
-
-Several components are intentionally still scaffolding:
-
-1. The bull/bear nodes are deterministic research commentary, not a production LLM provider integration.
-2. The backtester is a compact baseline simulator, not a full point-in-time institutional backtesting engine.
-3. The database schema exists, but there is no migration runner or application persistence layer yet.
-4. MSK is provisioned as infrastructure, but a Kafka producer/consumer/event-processing service is not implemented.
-5. The Docker image currently runs a readiness print and exits; it is not yet a long-running production worker/service.
-6. Terraform needs final AWS-environment validation, including ECS execution-role permissions and database credential management, before apply.
-7. Broker reconciliation, durable idempotency, kill-switch controls, partial-fill handling, and recovery workflows need to be implemented before live execution.
-8. CI validates Terraform and plans infrastructure, but production deployment still depends on correctly configured AWS/GitHub environment variables and an existing deployment role.
-9. OpenTelemetry dependencies are present, but an OTLP exporter/provider configuration has not yet been wired into the runtime.
-10. GitHub Actions are not yet pinned to immutable action SHAs.
-
-Treat the project as a **production engineering foundation**, not as a finished live-trading platform.
 
 ## Quick start
 
-### 1. Requirements
+### Requirements
 
-- Python 3.11 or newer
+- Python 3.11+
 - Git
 - Optional: Docker
-- Optional for AWS deployment: Terraform 1.6+, AWS credentials/OIDC, an existing VPC with private subnets, and appropriate AWS permissions
-- Optional for broker execution: Alpaca paper-trading credentials
+- Optional: Alpaca paper-trading account/credentials
+- Optional for AWS: Terraform 1.6+, AWS account, VPC, private subnets, and deployment IAM/OIDC configuration
 
-### 2. Clone and install
+### Install locally
 
 ```bash
 git clone https://github.com/mhsefidgar/Multi-Agent-Quantitative-Trading-Research.git
 cd Multi-Agent-Quantitative-Trading-Research
 
 python -m venv .venv
-source .venv/bin/activate       # Windows PowerShell: .venv\Scripts\Activate.ps1
+source .venv/bin/activate
+# Windows PowerShell:
+# .venv\Scripts\Activate.ps1
+
 python -m pip install --upgrade pip
 pip install -e '.[dev]'
 ```
 
-### 3. Run the quality gates
+### Run the checks
 
 ```bash
 ruff check .
 mypy src
 pytest -q
-pytest -q tests/test_factor_baseline.py
 ```
 
-The tests are designed to verify deterministic research behavior, fail-closed risk behavior, graph routing, and broker request construction without requiring a live Alpaca connection.
+The test suite does not require a live broker. Broker tests use an HTTP mock and verify request construction and validation locally.
 
-## Running the research graph
+## Run the research graph
 
-The primary entry point is `run_research()` in `src/agents/graph.py`.
+The main application-level entry point is `run_research()` in `src/agents/graph.py`.
 
-A minimal dry-run invocation looks conceptually like this:
+Example:
 
 ```python
 import numpy as np
@@ -154,6 +210,7 @@ from src.agents.graph import run_research
 
 rng = np.random.default_rng(7)
 close = 100 * np.cumprod(1 + rng.normal(0.001, 0.005, 300))
+
 bars = pd.DataFrame({
     "close": close,
     "volume": rng.integers(1_000, 10_000, 300).astype(float),
@@ -171,61 +228,55 @@ result = run_research({
 print(result)
 ```
 
-The graph executes:
+The graph runs in this order:
 
-1. `alpha_miner` — validates `close`/`volume` and computes the deterministic `momentum_volume_z` factor.
-2. `backtester` — evaluates the factor with configurable spread, slippage, and commission assumptions.
-3. `bull_debate` — generates a research-oriented positive case.
-4. `bear_debate` — generates a research-oriented failure case.
-5. `risk_manager` — evaluates deterministic policy limits.
-6. `execution` — is reachable only when risk approval is true.
-7. `failure` — returns an explicit error state when graph execution fails.
+1. **Alpha Miner** — validates market data and calculates the baseline factor.
+2. **Backtester** — evaluates the factor after transaction-cost assumptions.
+3. **Bull Debate** — records the positive research case.
+4. **Bear Debate** — records the failure case.
+5. **Risk Manager** — evaluates deterministic policy checks.
+6. **Execution** — runs only when risk explicitly approves.
+7. **Failure** — converts unexpected graph failures into an explicit error state.
 
-## Risk controls
+## Risk model
 
-The default `RiskLimits` are:
+The default limits are intentionally simple and easy to inspect:
 
 | Control | Default |
 |---|---:|
-| Maximum position fraction | 10% of portfolio |
-| Maximum VaR fraction | 2% |
+| Maximum position | 10% of portfolio |
+| Maximum estimated VaR | 2% |
 | Maximum drawdown | 20% |
 | Minimum Sharpe | 0.50 |
 | Maximum order notional | $1,000,000 |
 
-Risk approval requires all of the following:
+Approval requires every check to pass. For example, an order can be rejected because of position size even when the strategy has a good Sharpe ratio.
 
-- finite positive quantity and price
-- non-zero portfolio value
-- position notional within the portfolio limit
-- order notional below the absolute notional cap
-- estimated VaR within the configured limit
-- backtest drawdown within the configured breaker
-- backtest Sharpe above the minimum
-- a non-empty ticker
+The risk manager also checks for malformed values such as NaN/infinite quantity, price, portfolio value, or VaR. A rejected decision includes the failed check names and a deterministic SHA-256 decision hash.
 
-If any check fails, execution is blocked. The reason contains the failed policy checks and the decision is hashed for auditability.
+### Important safety boundary
 
-### Why the debates cannot approve a trade
+The bull/bear agents cannot approve a trade. Their output is informational state. This is intentional: natural-language reasoning should not become an authorization channel for capital movement.
 
-The bull and bear outputs are informational state. The risk manager does not inspect either output when deciding approval. This prevents prompt/agent text from becoming an implicit authorization path.
+## Backtesting
 
-## Backtesting baseline
+The current backtester is a **baseline simulator**, not an institutional-grade research engine.
 
-The current simulator uses:
+It currently includes:
 
-- one-period-lagged factor signals
-- bounded signals in `[-1, 1]`
+- one-period lag to reduce direct look-ahead from the factor
+- signal clipping to `[-1, 1]`
 - spread cost
 - slippage cost
 - commission cost
 - Sharpe ratio
 - Sortino ratio
 - maximum drawdown
-- simple alpha-decay/autocorrelation diagnostic
+- simple lag-1 alpha-decay diagnostic
 - turnover-derived trade count
+- total return
 
-Example cost parameters are passed in state:
+Example assumptions:
 
 ```python
 {
@@ -235,20 +286,11 @@ Example cost parameters are passed in state:
 }
 ```
 
-For institutional use, this layer should be extended with point-in-time data, corporate actions, survivorship controls, borrow constraints, market calendars, realistic execution/fill models, portfolio construction, exposure constraints, and statistical validation against leakage and overfitting.
+Before relying on results for capital allocation, add point-in-time data, corporate actions, survivorship-bias controls, market calendars, borrow/short constraints, realistic fill models, portfolio construction, liquidity limits, walk-forward validation, out-of-sample evaluation, leakage detection, and robustness tests.
 
-## Alpaca execution
+## Alpaca paper trading
 
-The broker adapter is intentionally small and typed. It supports:
-
-- market and limit orders
-- quantity validation
-- limit-price validation
-- dry-run mode
-- caller-supplied or generated `client_order_id`
-- order lookup for reconciliation
-
-### Environment variables
+Set credentials in the environment rather than committing them to the repository:
 
 ```bash
 export ALPACA_API_KEY="..."
@@ -256,77 +298,84 @@ export ALPACA_SECRET_KEY="..."
 export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 ```
 
-Keep credentials outside source control. Use AWS Secrets Manager in deployed environments.
+The broker adapter defaults to dry-run at the application call site. Keep paper trading enabled while validating the complete workflow.
 
-### Dry-run first
+Supported broker operations:
 
-The application-level default is dry-run. A production rollout should progress through:
+- market orders
+- limit orders
+- quantity and price validation
+- generated or caller-supplied client order IDs
+- dry-run requests
+- order lookup
 
-```text
-unit tests -> deterministic backtests -> paper trading -> reconciliation tests
--> failure-injection tests -> limited production canary -> controlled scale-up
+A successful order submission is **not** the same as a completed fill. A live system needs durable order state, reconciliation, partial-fill handling, cancel/replace logic, and restart recovery.
+
+## Container / worker
+
+The Docker image runs as a non-root user and starts `src.worker`.
+
+Build and run locally:
+
+```bash
+docker build -t quant-engine:local .
+docker run --rm quant-engine:local
 ```
 
-Do not treat a successful HTTP order submission as proof that the order was fully executed. Production execution needs durable order state and reconciliation against the broker.
+The current worker is a safe long-running service shell: it emits heartbeats and handles termination signals. It does **not** claim to be a Kafka consumer yet. The durable event-processing implementation should be added before treating ECS as a live trading worker.
 
-## PostgreSQL and pgvector
+You can adjust the heartbeat interval with:
 
-`src/storage/schema.sql` defines the persistence model:
+```bash
+WORKER_HEARTBEAT_SECONDS=10
+```
 
-- `research_runs` — lifecycle and risk decision metadata
-- `factor_observations` — factor values and optional 1536-dimensional embeddings
-- `agent_messages` — research/debate messages
-- `orders` — order intent and fill state with unique client order IDs
-- `audit_events` — append-oriented operational/audit records
+## PostgreSQL / pgvector
 
-The schema enables an HNSW cosine index over factor embeddings.
+`src/storage/schema.sql` provides the persistence model for:
 
-### Applying the schema
+- `research_runs`
+- `factor_observations`
+- `agent_messages`
+- `orders`
+- `audit_events`
 
-The SQL file is a migration input, not an automated migration system. In an AWS environment, apply it using a controlled migration runner with appropriate database credentials and change tracking.
+Factor observations include a 1536-dimensional vector column and an HNSW cosine index.
 
-Example for a directly reachable PostgreSQL instance:
+For a directly reachable database:
 
 ```bash
 psql "$DATABASE_URL" -f src/storage/schema.sql
 ```
 
-For production, use a proper migration tool/process and test migrations against the exact PostgreSQL/pgvector versions deployed in AWS.
+This SQL file is a schema baseline, not a complete migration system. Production should use a controlled migration tool, versioned migrations, migration history, backup/restore procedures, and tested rollback strategy.
 
-## AWS architecture
+## AWS / Terraform
 
-The Terraform baseline provisions or configures:
+The Terraform baseline covers:
 
-- CloudWatch log group
-- Secrets Manager broker secret placeholder
-- task/data security groups
-- private RDS PostgreSQL
-- Amazon MSK Kafka
-- ECS cluster with Container Insights
+- ECS cluster and Fargate service
 - ECR repository with immutable tags and scan-on-push
-- ECS task definition
-- ECS Fargate service
-- ECS IAM task role
+- RDS PostgreSQL
+- Amazon MSK
+- CloudWatch log group
+- security groups
+- Secrets Manager placeholder
+- IAM task role
 
-The ECS service is configured for private subnets and no public IP.
+The service is designed for private subnets without a public IP.
 
-### Prerequisites
-
-Before applying Terraform, provide:
-
-- AWS account
-- VPC ID
-- at least the required private subnet IDs
-- an AWS region
-- broker secret ARN strategy
-- network egress/NAT or required VPC endpoints for private ECS tasks
-- IAM permissions for Terraform
-
-Example variables:
+### Validate first
 
 ```bash
 terraform -chdir=terraform init
+terraform -chdir=terraform fmt -check
 terraform -chdir=terraform validate
+```
+
+Then plan with your environment-specific values:
+
+```bash
 terraform -chdir=terraform plan \
   -var='aws_region=us-east-1' \
   -var='vpc_id=vpc-xxxxxxxx' \
@@ -334,44 +383,31 @@ terraform -chdir=terraform plan \
   -var='broker_secret_arn=arn:aws:secretsmanager:...'
 ```
 
-**Do not run `terraform apply` against production until the production-readiness gaps are closed.** In particular, validate ECS execution-role permissions, RDS credential management, secrets injection, container startup behavior, network egress, and MSK client connectivity in a non-production environment first.
+Do not apply this baseline to a live trading environment until IAM, database credentials, secrets injection, network egress/VPC endpoints, MSK connectivity, ECS startup, backups, alarms, and operational recovery have been tested in a non-production environment.
 
 ## CI/CD
 
-`.github/workflows/deploy.yml` currently provides three stages:
+`.github/workflows/deploy.yml` currently covers:
 
 ### Validation
-
-Runs on pull requests and pushes to `main`:
 
 - Ruff
 - mypy
 - pytest
 - factor baseline test
 
-### Terraform validation/plan
+### Terraform
 
-Runs on `main` after validation:
-
-- Terraform formatting check
-- Terraform initialization without a backend
-- Terraform validation
-- Terraform plan using GitHub Actions variables
+- formatting check
+- initialization without a remote backend
+- validation
+- plan
 
 ### Container deployment
 
-Runs on `main` after Terraform validation:
+The deployment workflow uses GitHub OIDC to authenticate to AWS, builds an image, pushes a commit-SHA-tagged image to ECR, registers an ECS task definition, updates the service, and waits for ECS stability.
 
-1. Authenticate to AWS using GitHub OIDC.
-2. Build the Docker image.
-3. Push an immutable `${GITHUB_SHA}` image to ECR.
-4. Register an ECS task definition using that image.
-5. Update the ECS service.
-6. Wait for the ECS service to become stable.
-
-### Required GitHub configuration
-
-The workflow expects environment/repository configuration for values such as:
+Typical configuration includes:
 
 ```text
 AWS_REGION
@@ -384,192 +420,143 @@ ECS_SERVICE
 AWS_DEPLOY_ROLE_ARN
 ```
 
-The exact GitHub `vars.*` and `secrets.*` placement should be configured according to the repository's security model. The AWS deploy role should trust GitHub's OIDC provider and have only the permissions required for the release process.
+The exact values should be stored as GitHub environment/repository variables or secrets according to their sensitivity. AWS permissions should follow least privilege.
 
 ## Observability
 
-The telemetry module provides:
+The telemetry layer provides:
 
-### Structured logs
+- JSON structured logs
+- request/node trace context
+- OpenTelemetry research and node spans
+- node latency histogram
+- LLM token usage counter
+- backtest Sharpe histogram
+- execution slippage histogram
 
-`structlog` emits JSON logs and binds trace ID, node name, ticker, and severity context.
+The OpenTelemetry SDK/exporter dependencies are included, but an external OTLP exporter/provider still needs to be configured in the deployed runtime before traces are expected in a collector.
 
-### Prometheus metrics
+## Testing philosophy
 
-Current metrics include:
+The repository favors deterministic tests around the safety boundary.
 
-- `agent_node_latency_seconds`
-- `llm_token_usage_total`
-- `backtest_sharpe_ratio_distribution`
-- `order_execution_slippage_bps`
+Important cases include:
 
-### OpenTelemetry
+- malformed market data
+- missing required columns
+- oversized positions/orders
+- excessive VaR
+- excessive drawdown
+- insufficient Sharpe
+- NaN/infinite quantities
+- execution without risk approval
+- Alpaca dry-run behavior
+- limit-order validation
+- broker request construction
+- deterministic factor/backtest behavior
 
-Research and node spans are created under the `quant-engine` tracer namespace, with a root `research_graph` span around graph invocation.
-
-The OTLP SDK/exporter packages are declared, but exporter/provider configuration still needs to be wired into the deployed runtime before traces are expected in an external collector.
+The next testing layer for a production deployment should include integration tests against disposable infrastructure, Kafka failure tests, database recovery tests, broker reconciliation tests, network timeouts, duplicate delivery, container restarts, load tests, and controlled failure injection.
 
 ## Production readiness
 
-### Already implemented
+This project is intentionally honest about what is and is not finished.
 
-- [x] LangGraph research topology
-- [x] Deterministic factor baseline
-- [x] Backtest cost assumptions
-- [x] Deterministic fail-closed risk manager
-- [x] Execution guard requiring risk approval
-- [x] Broker request validation
-- [x] Dry-run support
+### Implemented
+
+- [x] LangGraph orchestration
+- [x] Deterministic alpha baseline
+- [x] Cost-aware backtest baseline
+- [x] Fail-closed deterministic risk manager
+- [x] Execution authorization guard
+- [x] Broker adapter and dry-run support
 - [x] Client order ID support
-- [x] Broker order lookup helper
-- [x] Unit and integration-style deterministic tests
-- [x] PostgreSQL/pgvector schema baseline
-- [x] AWS ECS/ECR/RDS/MSK Terraform baseline
+- [x] Deterministic automated tests
+- [x] PostgreSQL/pgvector schema
+- [x] AWS infrastructure baseline
 - [x] CI quality gates
 - [x] Immutable container release tags
-- [x] OIDC-based AWS deployment pattern
-- [x] Structured logs and telemetry primitives
+- [x] GitHub OIDC deployment pattern
+- [x] Structured logging / metrics / tracing primitives
+- [x] Long-running container entry point
 
-### Required before live trading
+### Still required before live trading
 
-- [ ] Replace the exiting Docker command with a real long-running worker/service.
-- [ ] Implement real market-data ingestion and point-in-time data handling.
-- [ ] Implement a real event pipeline using MSK/Kafka or another durable queue.
-- [ ] Add durable persistence for every research run and execution transition.
-- [ ] Add a production migration runner and migration history.
-- [ ] Implement broker reconciliation, partial-fill handling, cancel/replace handling, and restart recovery.
-- [ ] Make idempotency durable across process/container restarts.
-- [ ] Implement a human/operational kill switch and trading halt path.
-- [ ] Add account-level exposure, sector, liquidity, concentration, and market-hours controls as required.
-- [ ] Add stale-data detection and data-quality circuit breakers.
-- [ ] Add portfolio-level risk rather than only single-order checks.
-- [ ] Add realistic transaction-cost and execution simulation.
-- [ ] Add walk-forward/out-of-sample validation and leakage detection.
-- [ ] Integrate and constrain a real LLM provider if LLM reasoning is required.
-- [ ] Wire OpenTelemetry to an authenticated collector/exporter.
-- [ ] Fix and validate ECS execution-role and secret permissions.
-- [ ] Configure RDS credentials using managed/rotated secrets rather than unmanaged Terraform values.
-- [ ] Add deployment rollback and automated smoke tests.
-- [ ] Pin GitHub Actions to immutable commit SHAs.
-- [ ] Add dependency/security scanning and container vulnerability gates.
-- [ ] Add load, chaos, restart, network-failure, broker-failure, and duplicate-order tests.
-- [ ] Establish operational alerts, SLOs, on-call ownership, and incident procedures.
-- [ ] Validate all controls in paper trading before any production capital is exposed.
+- [ ] Durable market-data ingestion with point-in-time semantics
+- [ ] Real Kafka/MSK producer and consumer
+- [ ] Durable research and execution persistence
+- [ ] Versioned migration runner
+- [ ] Durable idempotency across restarts
+- [ ] Broker reconciliation and restart recovery
+- [ ] Partial-fill and cancel/replace state machine
+- [ ] Human/operator kill switch and trading halt path
+- [ ] Portfolio-level exposure and concentration controls
+- [ ] Liquidity and market-hours controls
+- [ ] Stale-data and data-quality circuit breakers
+- [ ] Realistic execution/fill simulation
+- [ ] Walk-forward and out-of-sample validation
+- [ ] Leakage, survivorship, and overfitting controls
+- [ ] Real LLM provider integration if LLM reasoning is required
+- [ ] Strict LLM output schemas, timeouts, budgets, and failure handling
+- [ ] OTLP exporter/provider runtime configuration
+- [ ] Production AWS IAM, RDS credential, backup, alarm, and network validation
+- [ ] Security/dependency/container scanning
+- [ ] GitHub Actions pinned to immutable SHAs
+- [ ] Deployment smoke tests and automated rollback
+- [ ] SLOs, alerts, runbooks, and incident procedures
+- [ ] Paper-trading soak period and controlled production canary
 
-## Failure and recovery model
+## Recommended path from research to production
 
-The intended safety boundary is:
-
-```text
-bad input / failed research
-          |
-          v
-       failure
-          |
-         END
-
-valid research
-     |
-     v
- deterministic risk
-   /          \
-blocked      approved
-  |              |
- END          execution
-                 |
-                 v
-             broker state
-                 |
-          reconciliation
-```
-
-The current graph invocation wrapper catches unexpected graph exceptions and converts them into a failure state. A complete production implementation should additionally persist the failure, emit an alertable event, and make recovery/replay semantics explicit.
-
-## Security model
-
-Never commit:
-
-- Alpaca API keys
-- AWS access keys
-- database passwords
-- OIDC/private signing material
-- production account identifiers that are not intended to be public
-
-Recommended deployment controls:
-
-- GitHub OIDC instead of long-lived AWS keys
-- least-privilege IAM roles
-- Secrets Manager for broker/database secrets
-- private ECS/RDS/MSK networking
-- encrypted storage and transport
-- immutable container tags
-- dependency and image scanning
-- mandatory pull-request review for risk-policy changes
-- separate paper and production AWS/broker environments
-- explicit approval gates for live execution
-
-## Testing strategy
-
-### Unit tests
-
-Focus on pure functions and policy invariants:
-
-- risk checks
-- invalid quantity/price handling
-- factor calculations
-- cost calculations
-- decision hashing
-
-### Integration tests
-
-Use mocked HTTP transports for broker contracts. Do not require real credentials in CI.
-
-### Backtest regression
-
-`tests/test_factor_baseline.py` provides a deterministic synthetic baseline so changes to factor logic can be detected by CI.
-
-### Production certification tests
-
-Before live trading, add tests for:
-
-- broker timeout
-- broker 5xx
-- duplicate submission
-- process restart after submission
-- partial fill
-- stale market data
-- database outage
-- Kafka outage
-- telemetry outage
-- invalid model/LLM output
-- kill switch activation
-- risk-limit changes
-- concurrent order attempts
-
-## Development workflow
-
-A recommended change workflow is:
+A practical rollout sequence is:
 
 ```text
-1. Create branch
-2. Change one bounded subsystem
-3. Add/update deterministic tests
-4. Run ruff + mypy + pytest locally
-5. Run Terraform fmt/validate for infrastructure changes
-6. Open pull request
-7. Review risk/security implications
-8. Merge only after CI passes
-9. Deploy to non-production
-10. Run paper-trading/smoke tests
-11. Promote using an explicit production approval process
+1. Local deterministic tests
+        |
+2. Historical research + leakage checks
+        |
+3. Paper trading
+        |
+4. Durable persistence + broker reconciliation
+        |
+5. Event-driven AWS staging environment
+        |
+6. Failure injection / restart / duplicate-delivery tests
+        |
+7. Paper-trading soak test in staging
+        |
+8. Limited production canary
+        |
+9. Gradual capital and symbol expansion
 ```
 
-Risk policy changes should receive additional review because a seemingly small threshold or state change can alter execution behavior.
+Do not skip directly from a passing unit-test suite to live capital.
 
-## Architecture documentation
+## Security notes
 
-See [`architecture_schema.md`](architecture_schema.md) for the workflow topology, state model, risk invariants, and infrastructure/observability design notes.
+- Never commit Alpaca credentials or AWS credentials.
+- Prefer AWS Secrets Manager for deployed secrets.
+- Use short-lived GitHub OIDC credentials rather than long-lived cloud keys in CI.
+- Keep the broker endpoint on the paper environment during development.
+- Run the container as a non-root user.
+- Apply least-privilege IAM.
+- Keep trading and research permissions separated where possible.
+- Treat logs and audit records as potentially sensitive operational data.
+- Add dependency, image, IaC, and secret scanning before production deployment.
+
+## Design documentation
+
+See [`architecture_schema.md`](architecture_schema.md) for the workflow model, state contract, risk invariants, observability notes, and AWS architecture assumptions.
+
+## Contributing
+
+Keep changes small and reviewable. For changes affecting trading behavior or risk:
+
+1. Add or update deterministic tests first.
+2. Document the changed invariant or assumption.
+3. Run `ruff`, `mypy`, and `pytest` locally.
+4. Keep broker/API calls behind explicit adapters.
+5. Never make natural-language agent output an authorization path.
 
 ## License
 
-No license is currently declared in the repository. Add an explicit license before treating the project as a distributable open-source package.
+No license has been declared in the repository yet. Add an explicit open-source license before presenting the project as reusable open-source software.
