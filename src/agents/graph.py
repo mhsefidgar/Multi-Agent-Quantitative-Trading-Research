@@ -6,8 +6,9 @@ from typing import Literal, TypedDict
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
-from .nodes import alpha_miner, backtester, bear_debate, bull_debate, execute_order, failure, risk_manager
 from src.telemetry.logging_tracing import research_span
+
+from .nodes import alpha_miner, backtester, bear_debate, bull_debate, execute_order, failure, risk_manager
 
 
 class ResearchState(TypedDict, total=False):
@@ -69,7 +70,7 @@ def run_research(state: ResearchState) -> ResearchState:
     with research_span(state):
         try:
             return research_graph.invoke(state)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - graph failures must be converted to fail-closed state
             failed = dict(state)
             failed["error"] = str(exc)
             return failure(failed)
