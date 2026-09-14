@@ -10,9 +10,8 @@ import os
 import signal
 import time
 
-import structlog
-
 from src.telemetry.logging_tracing import configure_logging
+import structlog
 
 _shutdown = False
 
