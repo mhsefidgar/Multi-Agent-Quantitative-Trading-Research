@@ -1,8 +1,49 @@
 # Multi-Agent Quantitative Trading Research
 
-A practical Python foundation for researching trading ideas, testing them, applying deterministic risk controls, and connecting approved orders to Alpaca.
+A practical Python foundation for **multi-agent quantitative trading research**, deterministic backtesting, risk evaluation, and controlled broker integration.
 
-The project uses **LangGraph for internal workflow orchestration** and **Model Context Protocol (MCP) for the external tool boundary**. MCP is deliberately not placed in the latency-sensitive execution path. It is not a live-trading system yet.
+The project is designed as an engineering/research platform rather than a turnkey trading bot. It combines **LangGraph for internal workflow orchestration** with **Model Context Protocol (MCP) for the external research-tool boundary**. MCP is intentionally kept out of the latency-sensitive execution path.
+
+> **Important:** This repository is **not approved for live trading**. The current implementation is suitable for local research, automated testing, paper-trading development, and infrastructure validation. Production deployment and live execution require additional controls described below.
+
+## What this repository is about
+
+The core idea is to separate **research intelligence** from **trade authorization**.
+
+A research workflow can generate factors, run backtests, compare bull/bear interpretations, and propose an order. However, research or AI output is never allowed to approve a trade by itself. A deterministic risk layer evaluates the proposed action and fails closed when limits are not satisfied.
+
+```text
+Market data
+    ↓
+Alpha / factor research
+    ↓
+Cost-aware backtest
+    ↓
+Bull / bear research
+    ↓
+Deterministic risk checks
+    ↓
+Approval boundary
+    ↓
+Broker adapter
+    ↓
+Alpaca paper/live endpoint
+```
+
+The current implementation includes:
+
+- LangGraph research workflow
+- MCP research/risk tool boundary
+- Deterministic momentum/volume alpha baseline
+- Cost-aware backtesting
+- Bull/bear research nodes
+- Position, notional, VaR, drawdown and Sharpe checks
+- Alpaca REST adapter with dry-run and paper-trading support
+- PostgreSQL/pgvector schema
+- Structured logs, Prometheus metrics and OpenTelemetry primitives
+- Docker image and long-running worker entry point
+- Terraform baseline for AWS ECS, ECR, RDS and MSK
+- GitHub Actions validation for Python and Terraform
 
 ## Architecture
 
@@ -23,7 +64,9 @@ research            risk evaluation
           Alpaca
 ```
 
-The key rule remains: **AI/research output cannot approve a trade.** The risk manager is deterministic and fail-closed.
+The key rule is:
+
+**AI/research output cannot approve a trade. The risk manager is deterministic and fail-closed.**
 
 ## MCP integration
 
@@ -53,38 +96,57 @@ The project uses the official Python MCP SDK in the `1.x` compatibility range. M
 - No order-submission MCP tool is exposed.
 - MCP integration tests cover deterministic research and oversized-order rejection.
 
-## What it does
+## How professionals can use this repository
 
-```text
-Market data
-    ↓
-Alpha signal
-    ↓
-Backtest
-    ↓
-Bull / Bear research
-    ↓
-Deterministic risk checks
-    ↓
-Approved order
-    ↓
-Alpaca
-```
+This repository is intended to be useful as a **research and engineering starting point** for quantitative developers, ML/AI engineers, trading-system engineers, researchers, and platform teams.
 
-Included today:
+### Quant researchers
 
-- LangGraph research workflow
-- MCP research/risk tool boundary
-- Deterministic momentum/volume alpha baseline
-- Cost-aware backtesting
-- Bull/bear research nodes
-- Position, notional, VaR, drawdown and Sharpe checks
-- Alpaca REST adapter with dry-run and paper-trading support
-- PostgreSQL/pgvector schema
-- Structured logs, Prometheus metrics and OpenTelemetry primitives
-- Docker image and long-running worker entry point
-- Terraform baseline for AWS ECS, ECR, RDS and MSK
-- GitHub Actions CI/CD foundation
+Use the repository to prototype and compare systematic ideas while keeping the research path reproducible:
+
+1. Add or replace factor-generation logic.
+2. Define explicit input data and assumptions.
+3. Run cost-aware backtests rather than evaluating raw signals only.
+4. Add statistical and economic diagnostics.
+5. Compare research hypotheses through the existing workflow.
+6. Preserve deterministic tests for every production-relevant research rule.
+
+For serious research, professionals should add point-in-time datasets, corporate-action handling, realistic transaction costs, slippage/market-impact assumptions, walk-forward evaluation, out-of-sample testing, parameter-stability analysis, and controls against look-ahead or survivorship bias.
+
+### Quant developers and trading engineers
+
+Use the project as a foundation for separating:
+
+- research and signal generation,
+- deterministic risk decisions,
+- order construction,
+- broker connectivity,
+- persistence and reconciliation,
+- observability and operational controls.
+
+The separation is intentional: changing an AI research component should not silently change the deterministic risk boundary or broker contract.
+
+### AI/ML engineers
+
+Use LangGraph and MCP where they add value without placing model calls in safety-critical execution paths. AI agents can help with research, hypothesis generation, summarization, scenario analysis, and tool selection, while deterministic code remains responsible for validation and authorization.
+
+A professional deployment should treat model output as **untrusted input**. Validate schemas, constrain tool permissions, log model/tool decisions, and require deterministic checks before any external side effect.
+
+### Platform / DevOps engineers
+
+Use the Terraform and container configuration as an infrastructure starting point. The repository provides a baseline for AWS ECS/Fargate, ECR, RDS PostgreSQL, MSK/Kafka, CloudWatch, security groups, and IAM.
+
+The infrastructure code is intentionally not presented as production-ready infrastructure. Teams should adapt it to their organization's network topology, IAM model, secrets management, observability standards, backup requirements, compliance controls, and disaster-recovery objectives.
+
+### Teams evaluating the repository
+
+A professional evaluation should distinguish three questions:
+
+1. **Does the research logic work?** — covered by deterministic tests and backtests.
+2. **Can the system fail safely?** — evaluate risk boundaries, invalid inputs, stale data, restart behavior, and broker failures.
+3. **Can the system operate reliably?** — evaluate persistence, reconciliation, monitoring, alerting, deployment, rollback, and recovery procedures.
+
+Passing unit tests alone is not evidence that a trading system is safe for production.
 
 ## Quick start
 
@@ -177,6 +239,8 @@ export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 
 The broker adapter supports market/limit orders, validation, `client_order_id`, dry-run requests and order lookup. A submitted order is not necessarily a filled order; live use still requires durable order state, reconciliation, partial-fill handling, cancel/replace logic, restart recovery and an operator kill switch.
 
+**Use paper trading before considering any production integration.** Never use production credentials simply to test the repository.
+
 ## Run locally with Docker
 
 ```bash
@@ -196,7 +260,7 @@ psql "$DATABASE_URL" -f src/storage/schema.sql
 
 For production, replace this one-shot schema setup with versioned migrations, automated backups, restore testing and controlled migration processes.
 
-## Deploy to AWS
+## AWS infrastructure and deployment status
 
 Terraform provides a starting point for ECS/Fargate, ECR, RDS PostgreSQL, Amazon MSK/Kafka, CloudWatch, security groups and IAM.
 
@@ -212,7 +276,25 @@ GitHub Actions
  logs / metrics / traces
 ```
 
-Prefer GitHub Actions OIDC over long-lived AWS access keys. Validate Terraform before deployment:
+### Current status: deployment is intentionally disabled
+
+GitHub Actions currently performs **validation only**. The Terraform job runs formatting, initialization without a backend, and validation. It does **not** provision AWS resources.
+
+The repository contains a deployment job for future use, but that job is explicitly disabled until an AWS environment is deliberately provisioned and reviewed. This means the project does **not require AWS deployment credentials just to keep CI healthy today**.
+
+When deployment is eventually enabled, configure and review at minimum:
+
+- GitHub Actions OIDC with an AWS IAM role.
+- A protected `production` GitHub Environment.
+- `AWS_DEPLOY_ROLE_ARN` as an environment secret.
+- `ECR_REPOSITORY`, `ECS_CLUSTER`, and `ECS_SERVICE` environment variables.
+- Least-privilege IAM permissions for ECR and ECS, including any required `iam:PassRole` permissions.
+- AWS networking, security groups, subnets, routing, encryption, logging, backups, and secrets management.
+- Deployment smoke tests, health checks, rollback procedures, and operational alerts.
+
+Prefer GitHub Actions OIDC over long-lived AWS access keys.
+
+Validate Terraform locally before any future infrastructure change:
 
 ```bash
 terraform -chdir=terraform init
@@ -221,7 +303,7 @@ terraform -chdir=terraform validate
 terraform -chdir=terraform plan
 ```
 
-The Terraform configuration is an infrastructure foundation, not a claim that the AWS environment is production-ready. IAM, secrets, networking, MSK connectivity, backups, alarms and recovery procedures still require environment-specific validation.
+The Terraform configuration is an infrastructure foundation, not a claim that the AWS environment is production-ready.
 
 ## Configuration model
 
@@ -264,16 +346,52 @@ architecture_schema.md
 pyproject.toml
 ```
 
-## Production status
+## Production-readiness checklist
 
-This is a serious engineering foundation, but **it is not approved for live trading**.
+Before moving beyond research and controlled paper trading, a professional team should address at least:
 
-Remaining work includes durable market-data ingestion and Kafka consumers; persistent execution/order state and reconciliation; partial fills and cancel/replace state machines; portfolio/liquidity risk controls; stale-data and market-hours breakers; kill switch and operational controls; institutional-quality point-in-time and walk-forward backtesting; production AWS IAM/secrets/network configuration; security/dependency scanning; deployment smoke tests and rollback; alerts/SLOs/runbooks; and extended paper-trading validation.
+### Research integrity
 
-The intended progression is:
+- Point-in-time market and fundamental data
+- Corporate actions and symbol changes
+- Look-ahead and survivorship-bias controls
+- Walk-forward and out-of-sample validation
+- Realistic commissions, spread, slippage, and market impact
+- Parameter stability and sensitivity analysis
+- Reproducible datasets and experiment metadata
+
+### Trading and risk controls
+
+- Persistent order and portfolio state
+- Broker reconciliation and restart recovery
+- Partial-fill and cancel/replace state machines
+- Position, exposure, concentration, liquidity, and leverage limits
+- Stale-data and market-hours breakers
+- Maximum-loss and drawdown controls
+- Operator kill switch
+- Explicit handling of broker/API outages and rejected orders
+
+### Production operations
+
+- Versioned database migrations
+- Durable market-data ingestion and Kafka consumers where required
+- Secrets management and key rotation
+- Least-privilege IAM
+- Dependency and security scanning
+- Structured audit trails
+- Metrics, traces, logs, alerts, and SLOs
+- Runbooks and incident-response procedures
+- Deployment smoke tests and automated rollback
+- Backup, restore, and disaster-recovery testing
+- Controlled paper-trading soak tests before live exposure
+
+## Intended progression
+
+The safest progression is deliberate and measurable:
 
 ```text
 local research
+   → reproducible backtests
    → paper trading
    → durable staging
    → failure/recovery testing
@@ -281,6 +399,8 @@ local research
    → controlled canary
    → gradual scale
 ```
+
+Each stage should have explicit entry and exit criteria. Do not treat a successful backtest or green CI run as authorization for live trading.
 
 ## Design notes
 
