@@ -59,6 +59,7 @@ def build_graph():
     graph.add_conditional_edges("risk_manager", route_after_risk, {"execution": "execution", "end": END})
     graph.add_edge("execution", END)
     graph.add_edge("failure", END)
+
     return graph.compile()
 
 
@@ -71,6 +72,6 @@ def run_research(state: ResearchState) -> ResearchState:
         try:
             return cast(ResearchState, research_graph.invoke(state))
         except Exception as exc:  # noqa: BLE001 - graph failures must be converted to fail-closed state
-            failed = dict(state)
+            failed = cast(ResearchState, dict(state))
             failed["error"] = str(exc)
             return cast(ResearchState, failure(failed))
