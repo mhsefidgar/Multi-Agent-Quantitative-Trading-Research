@@ -1,12 +1,13 @@
 """Deterministic LangGraph orchestration for quantitative research."""
 from __future__ import annotations
 
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
 from .nodes import alpha_miner, backtester, bear_debate, bull_debate, execute_order, failure, risk_manager
+from src.telemetry.logging_tracing import research_span
 
 
 class ResearchState(TypedDict, total=False):
@@ -25,10 +26,18 @@ class ResearchState(TypedDict, total=False):
     proposed_qty: float
     price: float
     portfolio_value: float
+    estimated_var_fraction: float
+    spread_bps: float
+    slippage_bps: float
+    commission_bps: float
 
 
-def route_after_risk(state: ResearchState) -> str:
-    return "execution" if bool(state.get("risk", {}).get("approved")) else END
+def route_after_risk(state: ResearchState) -> Literal["execution", "end"]:
+    return "execution" if bool(state.get("risk", {}).get("approved")) else "end"
+
+
+def route_on_error(state: ResearchState) -> Literal["failure", "continue"]:
+    return "failure" if state.get("error") else "continue"
 
 
 def build_graph():
@@ -46,10 +55,21 @@ def build_graph():
     graph.add_edge("backtester", "bull_debate")
     graph.add_edge("bull_debate", "bear_debate")
     graph.add_edge("bear_debate", "risk_manager")
-    graph.add_conditional_edges("risk_manager", route_after_risk, {"execution": "execution", END: END})
+    graph.add_conditional_edges("risk_manager", route_after_risk, {"execution": "execution", "end": END})
     graph.add_edge("execution", END)
     graph.add_edge("failure", END)
     return graph.compile()
 
 
 research_graph = build_graph()
+
+
+def run_research(state: ResearchState) -> ResearchState:
+    """Run one graph invocation inside a single root span for unified trace propagation."""
+    with research_span(state):
+        try:
+            return research_graph.invoke(state)
+        except Exception as exc:
+            failed = dict(state)
+            failed["error"] = str(exc)
+            return failure(failed)
