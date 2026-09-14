@@ -9,6 +9,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -45,11 +48,10 @@ jobs:
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
       - name: Build and push immutable image
         env:
           ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
-          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
           REGISTRY="$(aws sts get-caller-identity --query Account --output text).dkr.ecr.${AWS_REGION}.amazonaws.com"
           aws ecr get-login-password | docker login --username AWS --password-stdin "$REGISTRY"
@@ -67,4 +69,4 @@ jobs:
           REVISION=$(jq -r '.taskDefinition.taskDefinitionArn' registered.json)
           aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --task-definition "$REVISION"
       - name: Wait for stable deployment
-        run: aws ecs wait services-stable --cluster "${{ vars.ECS_CLUSTER }}" --services "${{ vars.ECS_SERVICE }}"
+        run: aws ecs wait services-stable --cluster "${{ env.AWS_REGION }}" --services "${{ vars.ECS_SERVICE }}"
