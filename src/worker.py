@@ -14,7 +14,6 @@ import structlog
 
 from src.telemetry.logging_tracing import configure_logging
 
-
 _shutdown = False
 
 

@@ -1,13 +1,14 @@
 """Deterministic LangGraph orchestration for quantitative research."""
 from __future__ import annotations
 
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, cast
 
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
-from .nodes import alpha_miner, backtester, bear_debate, bull_debate, execute_order, failure, risk_manager
 from src.telemetry.logging_tracing import research_span
+
+from .nodes import alpha_miner, backtester, bear_debate, bull_debate, execute_order, failure, risk_manager
 
 
 class ResearchState(TypedDict, total=False):
@@ -58,6 +59,7 @@ def build_graph():
     graph.add_conditional_edges("risk_manager", route_after_risk, {"execution": "execution", "end": END})
     graph.add_edge("execution", END)
     graph.add_edge("failure", END)
+
     return graph.compile()
 
 
@@ -68,8 +70,8 @@ def run_research(state: ResearchState) -> ResearchState:
     """Run one graph invocation inside a single root span for unified trace propagation."""
     with research_span(state):
         try:
-            return research_graph.invoke(state)
-        except Exception as exc:
-            failed = dict(state)
+            return cast(ResearchState, research_graph.invoke(state))
+        except Exception as exc:  # noqa: BLE001 - graph failures must be converted to fail-closed state
+            failed = cast(ResearchState, dict(state))
             failed["error"] = str(exc)
-            return failure(failed)
+            return cast(ResearchState, failure(failed))

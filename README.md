@@ -2,7 +2,56 @@
 
 A practical Python foundation for researching trading ideas, testing them, applying deterministic risk controls, and connecting approved orders to Alpaca.
 
-The project is built to be **easy to run locally and straightforward to move toward cloud deployment**. It is not a live-trading system yet.
+The project uses **LangGraph for internal workflow orchestration** and **Model Context Protocol (MCP) for the external tool boundary**. MCP is deliberately not placed in the latency-sensitive execution path. It is not a live-trading system yet.
+
+## Architecture
+
+```text
+MCP clients / AI assistants
+          ↓
+standard MCP tool boundary
+          ↓
+quant-research MCP server
+      ↙             ↘
+deterministic       deterministic
+research            risk evaluation
+      ↘             ↙
+        LangGraph
+            ↓
+   deterministic approval
+            ↓
+          Alpaca
+```
+
+The key rule remains: **AI/research output cannot approve a trade.** The risk manager is deterministic and fail-closed.
+
+## MCP integration
+
+`src/mcp_server/server.py` exposes three narrowly scoped MCP tools:
+
+- `generate_factor` — deterministic momentum/volume factor generation
+- `run_backtest` — deterministic cost-aware backtesting
+- `evaluate_risk` — deterministic position, notional, VaR, drawdown and Sharpe checks
+
+Execution is intentionally **not** exposed as an MCP tool. MCP clients can request research and risk evaluation, but cannot bypass the existing risk boundary or directly submit an order.
+
+Run the local MCP server over stdio:
+
+```bash
+pip install -e '.[dev]'
+quant-mcp
+```
+
+The project uses the official Python MCP SDK in the `1.x` compatibility range. MCP is an interoperability boundary, not the trading engine: core functions remain directly callable for high-throughput workflows without MCP serialization/tool-call overhead.
+
+### Performance and correctness decisions
+
+- No MCP calls inside the LangGraph hot path; deterministic functions remain local Python calls.
+- MCP adapters reuse existing factor, backtest and risk logic instead of duplicating trading rules.
+- MCP inputs/outputs use explicit JSON-compatible structures rather than exposing internal pandas state.
+- `evaluate_risk` invokes the same fail-closed `risk_manager` used by the core graph.
+- No order-submission MCP tool is exposed.
+- MCP integration tests cover deterministic research and oversized-order rejection.
 
 ## What it does
 
@@ -22,11 +71,10 @@ Approved order
 Alpaca
 ```
 
-The important design rule is simple: **AI/research output cannot approve a trade.** The risk manager is deterministic and fail-closed.
-
-### Included today
+Included today:
 
 - LangGraph research workflow
+- MCP research/risk tool boundary
 - Deterministic momentum/volume alpha baseline
 - Cost-aware backtesting
 - Bull/bear research nodes
@@ -57,15 +105,7 @@ pip install -e '.[dev]'
 
 ### 2. Configure environment variables
 
-Copy the example file:
-
-```bash
-cp .env.example .env
-```
-
-Then set the credentials you actually need.
-
-For Alpaca paper trading:
+Copy `.env.example` to `.env` and set credentials as needed. For Alpaca paper trading:
 
 ```bash
 ALPACA_API_KEY=your_paper_key
@@ -73,19 +113,9 @@ ALPACA_SECRET_KEY=your_paper_secret
 ALPACA_BASE_URL=https://paper-api.alpaca.markets
 ```
 
-Do **not** commit `.env` or real API keys to Git. `.env.example` is intentionally safe to commit.
+Do not commit `.env` or real API keys. In AWS, use Secrets Manager or your organization's secret manager and inject secrets at runtime.
 
-For local development, environment variables are enough. In AWS, use **AWS Secrets Manager** (or your organization's secret manager) and inject secrets into the container at runtime. Never put secrets directly in Terraform files, Dockerfiles, source code, or GitHub commits.
-
-Other optional variables:
-
-```bash
-DATABASE_URL=postgresql://user:password@host:5432/dbname
-WORKER_HEARTBEAT_SECONDS=30
-LLM_API_KEY=your_provider_key
-```
-
-`LLM_API_KEY` is only relevant when an LLM provider adapter is enabled; the current deterministic workflow does not require one.
+Optional variables include `DATABASE_URL`, `WORKER_HEARTBEAT_SECONDS`, and `LLM_API_KEY`.
 
 ### 3. Run tests
 
@@ -95,7 +125,15 @@ mypy src
 pytest -q
 ```
 
-The broker tests do not need a real Alpaca account.
+CI runs the same Ruff, mypy and pytest checks on pull requests, plus the factor baseline gate.
+
+### 4. Run the MCP server
+
+```bash
+quant-mcp
+```
+
+Configure an MCP-compatible client for a stdio server. Research/risk tools only are exposed.
 
 ## Run the research workflow
 
@@ -129,7 +167,7 @@ The graph validates market data, generates the factor, backtests it, creates res
 
 ## Alpaca keys and paper trading
 
-Create a paper-trading account with Alpaca and keep the credentials outside the repository.
+Keep Alpaca credentials outside the repository and use the paper endpoint while developing:
 
 ```bash
 export ALPACA_API_KEY="..."
@@ -137,34 +175,16 @@ export ALPACA_SECRET_KEY="..."
 export ALPACA_BASE_URL="https://paper-api.alpaca.markets"
 ```
 
-Keep `ALPACA_BASE_URL` pointed at the paper endpoint while developing.
-
-The current broker adapter supports:
-
-- market orders
-- limit orders
-- quantity/price validation
-- `client_order_id`
-- dry-run requests
-- order lookup
-
-A submitted order is not necessarily a filled order. Before live use, the system still needs durable order state, broker reconciliation, partial-fill handling, cancel/replace logic, restart recovery, and an operator kill switch.
+The broker adapter supports market/limit orders, validation, `client_order_id`, dry-run requests and order lookup. A submitted order is not necessarily a filled order; live use still requires durable order state, reconciliation, partial-fill handling, cancel/replace logic, restart recovery and an operator kill switch.
 
 ## Run locally with Docker
 
-Build the image:
-
 ```bash
 docker build -t quant-engine:local .
-```
-
-Run it with your local environment file:
-
-```bash
 docker run --rm --env-file .env quant-engine:local
 ```
 
-The image runs as a non-root user. The current `src.worker` is a safe long-running service shell that emits heartbeats and handles SIGTERM/SIGINT. It is **not yet a Kafka consumer**, so it should not be mistaken for a completed live trading worker.
+The image runs as a non-root user. `src.worker` is a safe long-running service shell with heartbeats and signal handling; it is not yet a Kafka consumer.
 
 ## Run with PostgreSQL
 
@@ -174,21 +194,11 @@ The schema is in `src/storage/schema.sql` and includes research runs, factor obs
 psql "$DATABASE_URL" -f src/storage/schema.sql
 ```
 
-For production, replace this one-shot schema setup with versioned migrations, automated backups, restore testing and a controlled migration process.
+For production, replace this one-shot schema setup with versioned migrations, automated backups, restore testing and controlled migration processes.
 
 ## Deploy to AWS
 
-The repository includes a Terraform starting point for:
-
-- ECS/Fargate
-- ECR
-- RDS PostgreSQL
-- Amazon MSK/Kafka
-- CloudWatch
-- security groups
-- IAM
-
-The intended deployment is:
+Terraform provides a starting point for ECS/Fargate, ECR, RDS PostgreSQL, Amazon MSK/Kafka, CloudWatch, security groups and IAM.
 
 ```text
 GitHub Actions
@@ -199,14 +209,10 @@ GitHub Actions
    ↙      ↘
  RDS      MSK
    ↘      ↙
-  logs / metrics / traces
+ logs / metrics / traces
 ```
 
-### Before deploying
-
-Configure AWS credentials locally or, preferably for GitHub Actions, use OIDC rather than storing a long-lived AWS access key.
-
-Validate Terraform first:
+Prefer GitHub Actions OIDC over long-lived AWS access keys. Validate Terraform before deployment:
 
 ```bash
 terraform -chdir=terraform init
@@ -215,25 +221,9 @@ terraform -chdir=terraform validate
 terraform -chdir=terraform plan
 ```
 
-Then deploy through your normal infrastructure process.
-
-The existing GitHub Actions workflow is designed around an AWS OIDC role, an ECR image tagged with the Git commit SHA, and an ECS service update.
-
-**Important:** the Terraform configuration is an infrastructure foundation, not a claim that the AWS environment is production-ready. IAM permissions, secret injection, RDS credentials, networking/egress, MSK connectivity, backups, alarms and recovery procedures still need environment-specific validation.
-
-## Cloud deployment options
-
-### AWS — recommended path in this repository
-
-Use ECS/Fargate for the application, RDS for durable state, MSK for event delivery, Secrets Manager for credentials, ECR for images, and CloudWatch/OpenTelemetry for operations.
-
-### Other platforms
-
-The application is containerized, so the worker can also be adapted to another container platform such as Kubernetes, a managed container service, or a private VM environment. The same rules apply: secrets stay outside the image, state must be durable, and broker/execution state must survive restarts.
+The Terraform configuration is an infrastructure foundation, not a claim that the AWS environment is production-ready. IAM, secrets, networking, MSK connectivity, backups, alarms and recovery procedures still require environment-specific validation.
 
 ## Configuration model
-
-Keep configuration separate from code:
 
 | Variable | Purpose | Local | Cloud |
 |---|---|---|---|
@@ -244,8 +234,6 @@ Keep configuration separate from code:
 | `LLM_API_KEY` | Optional LLM credential | `.env` | Secrets Manager |
 | `WORKER_HEARTBEAT_SECONDS` | Worker setting | environment | task environment |
 
-Do not use real credentials in examples, tests, Terraform variables committed to Git, or Docker image layers.
-
 ## Project structure
 
 ```text
@@ -255,6 +243,9 @@ src/
 │   └── nodes.py
 ├── execution/
 │   └── alpaca_broker.py
+├── mcp_server/
+│   ├── __init__.py
+│   └── server.py
 ├── storage/
 │   └── schema.sql
 ├── telemetry/
@@ -262,6 +253,9 @@ src/
 └── worker.py
 
 tests/
+├── test_graph.py
+├── test_mcp_server.py
+└── test_alpaca_broker.py
 terraform/
 .github/workflows/
 Dockerfile
@@ -274,25 +268,9 @@ pyproject.toml
 
 This is a serious engineering foundation, but **it is not approved for live trading**.
 
-The main remaining work is:
+Remaining work includes durable market-data ingestion and Kafka consumers; persistent execution/order state and reconciliation; partial fills and cancel/replace state machines; portfolio/liquidity risk controls; stale-data and market-hours breakers; kill switch and operational controls; institutional-quality point-in-time and walk-forward backtesting; production AWS IAM/secrets/network configuration; security/dependency scanning; deployment smoke tests and rollback; alerts/SLOs/runbooks; and extended paper-trading validation.
 
-- durable market-data ingestion and Kafka consumers
-- persistent execution/order state and idempotency
-- broker reconciliation and restart recovery
-- partial fills and cancel/replace state machines
-- portfolio-level and liquidity risk controls
-- stale-data and market-hours breakers
-- kill switch and operational controls
-- institutional-quality point-in-time backtesting
-- walk-forward/out-of-sample validation and leakage controls
-- real LLM provider integration if required
-- production AWS IAM/secrets/network configuration
-- security and dependency scanning
-- deployment smoke tests and rollback
-- alerts, SLOs and operational runbooks
-- extended paper-trading validation before any live capital
-
-The right progression is:
+The intended progression is:
 
 ```text
 local research
