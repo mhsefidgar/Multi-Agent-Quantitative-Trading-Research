@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from time import perf_counter
 from typing import Any
@@ -31,7 +31,7 @@ def configure_logging() -> None:
     )
 
 
-def _bind_span_context(span: Span, node_name: str, state: dict[str, Any]) -> None:
+def _bind_span_context(span: Span, node_name: str, state: Mapping[str, Any]) -> None:
     context = span.get_span_context()
     structlog.contextvars.bind_contextvars(
         trace_id=format(context.trace_id, "032x"),
@@ -42,7 +42,7 @@ def _bind_span_context(span: Span, node_name: str, state: dict[str, Any]) -> Non
 
 
 @contextmanager
-def research_span(state: dict[str, Any]) -> Iterator[Span]:
+def research_span(state: Mapping[str, Any]) -> Iterator[Span]:
     """Create the root span shared by every node in a research invocation."""
     tracer = trace.get_tracer("quant-engine")
     with tracer.start_as_current_span("research_graph") as span:
@@ -51,7 +51,7 @@ def research_span(state: dict[str, Any]) -> Iterator[Span]:
 
 
 @contextmanager
-def node_span(node_name: str, state: dict[str, Any]) -> Iterator[Span]:
+def node_span(node_name: str, state: Mapping[str, Any]) -> Iterator[Span]:
     tracer = trace.get_tracer("quant-engine")
     started = perf_counter()
     with tracer.start_as_current_span(node_name) as span:
