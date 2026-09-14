@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -21,16 +23,16 @@ def test_limit_order_requires_price() -> None:
     broker.close()
 
 
-def test_submit_posts_structured_order(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_submit_posts_structured_order() -> None:
     broker = AlpacaBroker("key", "secret", base_url="https://example.test")
     seen: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        seen["json"] = request.read().decode()
+        seen["json"] = json.loads(request.content)
         return httpx.Response(201, json={"id": "order-1", "status": "accepted"}, request=request)
 
     broker._client = httpx.Client(transport=httpx.MockTransport(handler), headers=broker._headers)
     result = broker.submit(OrderRequest("AAPL", 2, "buy", "market", client_order_id="research-1"), dry_run=False)
     assert result["id"] == "order-1"
-    assert '"client_order_id":"research-1"' in str(seen["json"])
+    assert seen["json"]["client_order_id"] == "research-1"  # type: ignore[index]
     broker.close()
