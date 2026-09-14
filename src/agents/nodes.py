@@ -34,7 +34,7 @@ def _require_finite_series(series: pd.Series, name: str) -> None:
 def alpha_miner(state: dict[str, Any]) -> dict[str, Any]:
     bars = state.get("bars")
     if not isinstance(bars, pd.DataFrame):
-        raise ValueError("bars must be a pandas DataFrame")
+        raise TypeError("bars must be a pandas DataFrame")
     required = {"close", "volume"}
     if not required.issubset(bars.columns):
         raise ValueError(f"missing columns: {sorted(required - set(bars.columns))}")
